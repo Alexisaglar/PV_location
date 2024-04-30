@@ -1,85 +1,81 @@
+import pandas as pd
+import matplotlib.pyplot as plt
 import pvlib
-from datetime import datetime
-import numpy as np
 
+# Read the historical GHI data
+ghi_data = pd.read_csv("data/irradiance.csv", index_col=0, parse_dates=True)
+ghi_data.set_index(ghi_data["GHI"])
+# ghi_data.index = ghi_data.index.tz_localize(
+#     "Europe/London", ambiguous="", nonexistent="shift_forward"
+# )
+print(ghi_data)
 
-def hay_davies(
-    I_h_diffuse, I_dn_direct, zenith_angle, azimuth_angle, tilt_angle, surface_azimuth
-):
-    """
-    Calculate total irradiance on a tilted surface using the Hay-Davies method.
+# Define the location (Newcastle Upon Tyne)
+latitude = 54.9783
+longitude = -1.6174
+timezone = "Europe/London"
+location = pvlib.location.Location(latitude, longitude, tz=timezone)
 
-    Parameters:
-    I_h_diffuse (float): Diffuse horizontal irradiance (W/m^2)
-    I_dn_direct (float): Direct normal irradiance (W/m^2)
-    zenith_angle (float): Solar zenith angle in degrees
-    azimuth_angle (float): Solar azimuth angle in degrees
-    tilt_angle (float): Tilt angle of the surface in degrees
-    surface_azimuth (float): Azimuth angle of the surface in degrees
+# Simulation times should match your historical data
+times = ghi_data.index
 
-    Returns:
-    float: Total irradiance on the tilted surface (W/m^2)
-    """
-    # Convert angles from degrees to radians for computation
-    zenith_rad = np.radians(zenith_angle)
-    azimuth_rad = np.radians(azimuth_angle)
-    tilt_rad = np.radians(tilt_angle)
-    surface_azimuth_rad = np.radians(surface_azimuth)
+# Simulate for different tilts and azimuths
+tilts = [0, 15, 30, 45, 60, 75, 90]  # Example tilts in degrees
+# tilts = [30]  # Example tilts in degrees
+azimuths = [0, 90, 180, 270]  # 0 = North, 90 = East, 180 = South, 270 = West
 
-    # Cosine of the angle of incidence
-    cos_theta_i = np.sin(zenith_rad) * np.cos(tilt_rad) * np.cos(
-        azimuth_rad - surface_azimuth_rad
-    ) + np.cos(zenith_rad) * np.sin(tilt_rad)
-    cos_theta_i = max(cos_theta_i, 0)  # No negative values
+# Prepare a DataFrame to store simulation results
+simulated_ghi = pd.DataFrame(index=times)
 
-    # Isotropic diffuse component
-    I_d_isotropic = I_h_diffuse * (1 + np.cos(tilt_rad)) / 2
+for tilt in tilts:
+    for azimuth in azimuths:
+        # Calculate the solar position
+        solar_position = location.get_solarposition(times)
 
-    # Beam component on the tilted surface
-    I_b_direct = I_dn_direct * cos_theta_i
+        # Get clear sky data
+        clear_sky = location.get_clearsky(times, model="ineichen")
 
-    # Simple model for circumsolar diffuse
-    circumsolar_factor = 0.1  # Example fraction
-    I_d_circumsolar = I_b_direct * circumsolar_factor
+        # Calculate plane of array irradiance
+        poa_irradiance = pvlib.irradiance.get_total_irradiance(
+            surface_tilt=tilt,
+            surface_azimuth=azimuth,
+            dni=clear_sky["dni"],
+            ghi=clear_sky["ghi"],
+            dhi=clear_sky["dhi"],
+            solar_zenith=solar_position["apparent_zenith"],
+            solar_azimuth=solar_position["azimuth"],
+        )
+        simulated_ghi[f"tilt_{tilt}_azimuth_{azimuth}"] = poa_irradiance["poa_global"]
 
-    # Total irradiance
-    I_t_total = I_d_isotropic + I_d_circumsolar + I_b_direct
-
-    return I_t_total
-
-
-# Location and time setup
-latitude, longitude = 40.7128, -74.0060  # New York City
-tz = "America/New_York"
-time = datetime(2023, 4, 15, 12)  # April 15, 2023, at noon
-
-# Create a location object in pvlib
-location = pvlib.location.Location(latitude, longitude, tz)
-
-# Solar position
-solar_position = location.get_solarposition(time)
-
-# Clear sky irradiance using Ineichen model (simplified clear sky model)
-clear_sky = location.get_clearsky(time, model="ineichen", solar_position=solar_position)
-
-# Direct and diffuse irradiance
-I_dn = clear_sky["dni"]
-I_h = clear_sky["ghi"]
-diffuse_fraction = 0.3  # Example value for diffuse fraction
-I_h_diffuse = I_h * diffuse_fraction
-
-# Tilt and azimuth of the surface
-tilt_angle = 30  # Degrees
-surface_azimuth = 140  # Degrees
-
-# Total irradiance on the tilted surface
-total_irradiance = hay_davies(
-    I_h_diffuse,
-    I_dn,
-    solar_position["apparent_zenith"],
-    solar_position["azimuth"],
-    tilt_angle,
-    surface_azimuth,
+# Define figure and subplot grid
+num_tilts = 7  # Example number of tilts used in the simulation
+num_azimuths = 4  # Example number of azimuths used in the simulation
+fig, axs = plt.subplots(
+    num_tilts, num_azimuths, figsize=(20, 20), sharex=True, sharey=True
 )
 
-print(f"Total Irradiance on Tilted Surface: {total_irradiance} W/m^2")
+# Iterate through each subplot and plot the data
+for i, tilt in enumerate([0, 15, 30, 45, 60, 75, 90]):
+    for j, azimuth in enumerate([0, 90, 180, 270]):
+        ax = axs[i, j]
+        column_name = f"tilt_{tilt}_azimuth_{azimuth}"
+        ax.plot(
+            simulated_ghi[column_name],
+            label=f"Simulated GHI\nTilt: {tilt}, Azimuth: {azimuth}",
+        )
+        ax.plot(ghi_data["GHI"], label="Actual GHI", color="black", alpha=0.75)
+        ax.set_title(f"Tilt: {tilt}°, Azimuth: {azimuth}°")
+        ax.grid(True)
+
+        # Add legend to each subplot
+        ax.legend()
+
+# Set common labels
+for ax in axs[-1, :]:
+    ax.set_xlabel("Time")
+for ax in axs[:, 0]:
+    ax.set_ylabel("GHI (W/m²)")
+
+# Adjust layout
+plt.tight_layout()
+plt.show()
